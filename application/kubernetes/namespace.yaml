@@ -3,4 +3,5 @@ kind: Namespace
 metadata:
   name: retail-app
   labels:
+    name: retail-app
     project: tinyuka-2025-capstone

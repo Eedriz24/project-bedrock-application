@@ -51,8 +51,8 @@ jobs:
         run: |
           kubeconform -strict -summary \
             -ignore-missing-schemas \
-            kubernetes/namespace.yaml kubernetes/ingress.yaml \
-            kubernetes/network-policies/*.yaml
+            application/kubernetes/namespace.yaml application/kubernetes/ingress.yaml \
+            application/kubernetes/network-policies/*.yaml
 
   # ============================================================
   # VALIDATE - Helm chart + custom values (PR only)
@@ -63,7 +63,7 @@ jobs:
     if: github.event_name == 'pull_request'
     defaults:
       run:
-        working-directory: helm/retail-store
+        working-directory: application/helm/retail-store
     steps:
       - uses: actions/checkout@v4
 
@@ -91,7 +91,7 @@ jobs:
     if: github.event_name == 'pull_request'
     defaults:
       run:
-        working-directory: lambda/bedrock_asset_processor
+        working-directory: application/lambda/bedrock_asset_processor
     steps:
       - uses: actions/checkout@v4
 
@@ -149,22 +149,22 @@ jobs:
 
       # ---- Path A: raw manifests (used only if no Helm values file is committed) ----
       - name: Apply Kubernetes manifests
-        if: hashFiles('helm/retail-store/*.yaml') == ''
+        if: hashFiles('application/helm/retail-store/*.yaml') == ''
         run: |
-          kubectl apply -f kubernetes/namespace.yaml
-          kubectl apply -f kubernetes/retail-store/
-          kubectl apply -f kubernetes/ingress.yaml
-          kubectl apply -f kubernetes/network-policies/
+          kubectl apply -f application/kubernetes/namespace.yaml
+          kubectl apply -f application/kubernetes/retail-store/
+          kubectl apply -f application/kubernetes/ingress.yaml
+          kubectl apply -f application/kubernetes/network-policies/
 
       # ---- Path B: Helm (used since values-rds-dynamodb.yaml is committed) ----
       - uses: azure/setup-helm@v4
-        if: hashFiles('helm/retail-store/*.yaml') != ''
+        if: hashFiles('application/helm/retail-store/*.yaml') != ''
         with:
           version: "latest"
 
       - name: Deploy via Helm
-        if: hashFiles('helm/retail-store/*.yaml') != ''
-        working-directory: helm/retail-store
+        if: hashFiles('application/helm/retail-store/*.yaml') != ''
+        working-directory: application/helm/retail-store
         run: |
           kubectl apply -f secretProviderClass.yaml
           helm repo add retail-store https://aws-containers.github.io/retail-store-sample-app/
