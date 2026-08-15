@@ -28,7 +28,7 @@ carts:
     annotations:
       eks.amazonaws.com/role-arn: "arn:aws:iam::232428703462:role/bedrock-carts-irsa"
 
-# Message brokers stay in-cluster (chart defaults, per project spec)
+# Message brokers stay in-cluster 
 rabbitmq:
   enabled: true
 redis:
