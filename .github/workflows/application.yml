@@ -166,6 +166,7 @@ jobs:
         if: hashFiles('application/helm/retail-store/*.yaml') != ''
         working-directory: application/helm/retail-store
         run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -f secretProviderClass.yaml
           helm repo add retail-store https://aws-containers.github.io/retail-store-sample-app/
           helm repo update
