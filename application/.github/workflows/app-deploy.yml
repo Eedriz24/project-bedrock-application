@@ -1,0 +1,75 @@
+name: Application Deploy
+
+# Runs on merge to main when application/ changes: deploys the
+# retail-store-sample-app to the EKS cluster provisioned by the
+# infrastructure layer. Assumes the cluster, RDS/DynamoDB, AWS Load
+# Balancer Controller, and Secrets Store CSI Driver already exist
+# (created by infrastructure/terraform).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "application/**"
+  workflow_dispatch: {}   # allow manual re-deploy from the Actions tab
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: project-bedrock-cluster
+  NAMESPACE: retail-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      # ---- Path A: raw manifests ----
+      - name: Apply Kubernetes manifests
+        if: hashFiles('helm/retail-store/values-rds-dynamodb.yaml') == ''
+        run: |
+          kubectl apply -f kubernetes/namespace.yaml
+          kubectl apply -f kubernetes/retail-store/
+          kubectl apply -f kubernetes/ingress.yaml
+          kubectl apply -f kubernetes/network-policies/
+
+      # ---- Path B: Helm (used here since values-rds-dynamodb.yaml is committed) ----
+      - uses: azure/setup-helm@v4
+        if: hashFiles('helm/retail-store/values-rds-dynamodb.yaml') != ''
+        with:
+          version: "latest"
+
+      - name: Deploy via Helm
+        if: hashFiles('helm/retail-store/values-rds-dynamodb.yaml') != ''
+        working-directory: application/helm/retail-store
+        run: |
+          kubectl apply -f secretProviderClass.yaml
+          helm repo add retail-store https://aws-containers.github.io/retail-store-sample-app/
+          helm repo update
+          helm upgrade --install retail-store retail-store/retail-store-sample-app \
+            -n ${{ env.NAMESPACE }} --create-namespace \
+            -f values-rds-dynamodb.yaml \
+            --wait --timeout 5m
+
+      - name: Verify rollout
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get ingress -n ${{ env.NAMESPACE }} -o wide

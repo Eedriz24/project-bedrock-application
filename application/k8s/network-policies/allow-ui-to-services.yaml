@@ -1,0 +1,53 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-to-backends
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: catalog
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: ui
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-to-carts
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: carts
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: ui
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-to-orders
+  namespace: retail-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: orders
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: ui
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: checkout
