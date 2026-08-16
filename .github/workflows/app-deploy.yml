@@ -1,35 +1,41 @@
-name: App Deploy
+name: Application CI/CD
+
+# Pull Request  -> validate manifests + Helm lint, posted as PR comment
+# Merge to main -> validate + deploy to EKS
+# Manual trigger -> workflow_dispatch
 
 on:
+  pull_request:
+    paths:
+      - "helm/**"
+      - "kubernetes/**"
+      - ".github/workflows/app-deploy.yml"
   push:
     branches: [main]
     paths:
-      - 'helm/**'
-      - 'k8s/**'
-      - '.github/workflows/app-deploy.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'helm/**'
-      - 'k8s/**'
-  workflow_dispatch:
+      - "helm/**"
+      - "kubernetes/**"
+      - ".github/workflows/app-deploy.yml"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
   pull-requests: write
 
 env:
-  CLUSTER_NAME:  project-bedrock-cluster
-  NAMESPACE:     retail-app
-  CHART_VERSION: "1.6.2"
-  REGION:        us-east-1
+  CLUSTER_NAME: project-bedrock-cluster
+  NAMESPACE: retail-app
+  CHART_VERSION: "0.8.5" # verify this is still current before relying on it:
+  #   helm show chart oci://public.ecr.aws/aws-containers/retail-store-sample-chart
+  REGION: us-east-1
 
 jobs:
-  # ── Validate ────────────────────────────────────────────────────────────────
+  # ============================================================
+  # VALIDATE - runs on every trigger
+  # ============================================================
   validate:
     name: Validate Manifests
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -41,18 +47,17 @@ jobs:
       - name: Helm lint values
         run: |
           helm lint helm/ --values helm/values.yaml 2>/dev/null || \
-          echo "Lint complete (no chart to lint — values file only)"
+          echo "Lint complete (no chart to lint locally - values file only, chart is remote OCI)"
 
       - name: Validate Kubernetes manifests
         run: |
-          # Check YAML syntax on all manifests
-          for f in k8s/*.yaml; do
+          for f in kubernetes/*.yaml; do
             echo "Validating $f..."
             python3 -c "import yaml, sys; list(yaml.safe_load_all(open('$f')))" \
-              && echo "  ✓ $f" \
-              || { echo "  ✗ $f — invalid YAML"; exit 1; }
+              && echo "  OK $f" \
+              || { echo "  FAILED $f - invalid YAML"; exit 1; }
           done
-          echo "All manifests valid ✓"
+          echo "All manifests valid"
 
       - name: Post validation result to PR
         if: github.event_name == 'pull_request'
@@ -60,32 +65,54 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const body = `## App Manifest Validation
+            **Status:** All manifests valid
+            **Commit:** ${{ github.sha }}
+
+            Merging will deploy retail-store v${{ env.CHART_VERSION }} to \`${{ env.NAMESPACE }}\`.`;
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
-              owner:        context.repo.owner,
-              repo:         context.repo.repo,
-              body: ## App Manifest Validation\n**Status:** ✅ All manifests valid\n**Commit:** \${{ github.sha }}\\n\nMerging will deploy retail-store v${{ env.CHART_VERSION }} to \${{ env.NAMESPACE }}\.
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
             });
 
-  # ── Deploy ──────────────────────────────────────────────────────────────────
+  # ============================================================
+  # DEPLOY - push to main, or manual dispatch
+  # Assumes the cluster, RDS/DynamoDB, AWS Load Balancer Controller,
+  # and Secrets Store CSI Driver already exist (managed entirely by
+  # the infrastructure layer's Terraform - this job does NOT install
+  # or modify cluster add-ons, to avoid dual ownership/drift).
+  # ============================================================
   deploy:
     name: Deploy to EKS
     runs-on: ubuntu-latest
     needs: validate
-    environment: production
+    environment: production # optional manual-approval gate; safe to remove
     if: |
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.AWS_AUTH_METHOD != 'access_keys' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Configure AWS credentials (Access Key fallback)
+        if: ${{ vars.AWS_AUTH_METHOD == 'access_keys' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.REGION }}
+          aws-region: ${{ env.REGION }}
 
       - name: Configure kubectl
         run: |
@@ -101,13 +128,13 @@ jobs:
 
       - name: Create retail-app namespace
         run: |
-          kubectl apply -f k8s/namespace.yaml
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Create Kubernetes Secrets from AWS Secrets Manager
         run: |
           # MySQL secret for catalog service
           MYSQL_SECRET=$(aws secretsmanager get-secret-value \
-            --secret-id "project-bedrock/mysql" \
+            --secret-id "bedrock/catalog-mysql" \
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
@@ -120,7 +147,7 @@ jobs:
 
           # PostgreSQL secret for orders service
           PG_SECRET=$(aws secretsmanager get-secret-value \
-            --secret-id "project-bedrock/postgresql" \
+            --secret-id "bedrock/orders-postgres" \
             --region ${{ env.REGION }} \
             --query SecretString --output text)
 
@@ -131,31 +158,13 @@ jobs:
             --from-literal=password="$(echo "$PG_SECRET" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "Kubernetes Secrets created ✓"
+          echo "Kubernetes Secrets created"
 
-      - name: Install AWS Load Balancer Controller
-        run: |
-          VPC_ID=$(aws eks describe-cluster \
-            --name ${{ env.CLUSTER_NAME }} \
-            --region ${{ env.REGION }} \
-            --query "cluster.resourcesVpcConfig.vpcId" \
-            --output text)
-
-          helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
-          helm repo update
-
-          helm upgrade --install aws-load-balancer-controller \
-            eks/aws-load-balancer-controller \
-            --namespace kube-system \
-            --set clusterName=${{ env.CLUSTER_NAME }} \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=${{ env.REGION }} \
-            --set vpcId="$VPC_ID" \
-            --wait \
-            --timeout 5m
-
-          echo "AWS Load Balancer Controller installed ✓"
+      # NOTE: AWS Load Balancer Controller is intentionally NOT installed
+      # here - it's already managed by infrastructure/terraform/cluster-addons.tf
+      # via helm_release.alb_controller. Installing it again here would
+      # create dual ownership of the same Helm release and cause drift
+      # or "cannot re-use a name that is still in use" conflicts.
 
       - name: Get DynamoDB table name
         id: dynamo
@@ -164,12 +173,12 @@ jobs:
             --region ${{ env.REGION }} \
             --query "TableNames[?contains(@, 'carts')]" \
             --output text)
-          echo "table=$TABLE" >> $GITHUB_OUTPUT
+          echo "table=$TABLE" >> "$GITHUB_OUTPUT"
 
       - name: Deploy retail-store-sample-app
         run: |
           helm upgrade --install retail-store \
-            oci://public.ecr.aws/aws-containers/retail-store-sample-app \
+            oci://public.ecr.aws/aws-containers/retail-store-sample-chart \
             --version ${{ env.CHART_VERSION }} \
             --namespace ${{ env.NAMESPACE }} \
             --values helm/values.yaml \
@@ -177,33 +186,35 @@ jobs:
             --wait \
             --timeout 10m
 
-          echo "retail-store-sample-app deployed ✓"
+          echo "retail-store-sample-app deployed"
 
       - name: Apply Ingress and NetworkPolicies
         run: |
-          kubectl apply -f k8s/ingress.yaml
-          kubectl apply -f k8s/network-policies.yaml
+          kubectl apply -f kubernetes/ingress.yaml
+          kubectl apply -f kubernetes/network-policies/
 
       - name: Wait for ALB and post summary
         run: |
           echo "Waiting for ALB..."
           ALB_HOSTNAME=""
-          for i in {1..24}; do
+          for i in $(seq 1 24); do
             ALB_HOSTNAME=$(kubectl get ingress retail-store-ingress \
               -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-            [[ -n "$ALB_HOSTNAME" ]] && break
-            echo "Attempt $i/24 — waiting 15s..."
+            [ -n "$ALB_HOSTNAME" ] && break
+            echo "Attempt $i/24 - waiting 15s..."
             sleep 15
           done
 
-          echo "## App Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| | |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Chart | retail-store-sample-app v${{ env.CHART_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Namespace | ${{ env.NAMESPACE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ALB URL | http://$ALB_HOSTNAME |" >> $GITHUB_STEP_SUMMARY
-          echo "| Pods | $(kubectl get pods -n ${{ env.NAMESPACE }} --no-headers | wc -l) running |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## App Deployment Summary"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Chart | retail-store-sample-chart v${{ env.CHART_VERSION }} |"
+            echo "| Namespace | ${{ env.NAMESPACE }} |"
+            echo "| ALB URL | http://$ALB_HOSTNAME |"
+            echo "| Pods | $(kubectl get pods -n ${{ env.NAMESPACE }} --no-headers | wc -l) running |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify pods
         run: |
