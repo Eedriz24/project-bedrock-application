@@ -191,7 +191,7 @@ jobs:
       - name: Apply Ingress and NetworkPolicies
         run: |
           kubectl apply -f kubernetes/ingress.yaml
-          kubectl apply -f kubernetes/network-policies/
+          kubectl apply -f kubernetes/networkpolicies.yml
 
       - name: Wait for ALB and post summary
         run: |
