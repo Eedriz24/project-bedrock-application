@@ -1,10 +1,14 @@
+# values.yaml for oci://public.ecr.aws/aws-containers/retail-store-sample-chart:0.8.5
+# Schema verified directly against each subchart's values.yaml + deployment
+# templates - see infrastructure-debugging notes. Do not rename these keys;
+# unknown keys are silently ignored by Helm, which is what broke the
+# previous version of this file.
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui:
   replicaCount: 2
-
   service:
-    type: ClusterIP    # ALB Ingress handles external exposure
-
+    type: ClusterIP # ALB Ingress handles external exposure
   resources:
     requests:
       cpu: 128m
@@ -13,34 +17,18 @@ ui:
       cpu: 512m
       memory: 512Mi
 
-# ── Catalog Service → RDS MySQL ───────────────────────────────────────────────
+# ── Catalog Service -> RDS MySQL ───────────────────────────────────────────────
 catalog:
   replicaCount: 1
-
-  # Disable in-cluster MySQL sidecar
   mysql:
-    enabled: false
-
-  # Reference Kubernetes Secret created by deploy-app.sh
-  # Secret: retail-store-catalog-db (namespace: retail-app)
-  db:
-    name: catalog
-    endpoint:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: host
-    user:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: username
-    password:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: password
-
+    create: false # disable the in-cluster MySQL StatefulSet
+    endpoint: "bedrock-catalog-mysql.c0z6wuei25lr.us-east-1.rds.amazonaws.com" # plain hostname, no port suffix
+    database: catalog
+    secret:
+      create: false # use the existing Secret below instead of generating one
+      name: retail-store-catalog-db # matches the Secret your deploy workflow creates
+      username: catalog_admin
+      # password is read from the Secret's "password" key at runtime - not set here
   resources:
     requests:
       cpu: 128m
@@ -49,34 +37,21 @@ catalog:
       cpu: 512m
       memory: 512Mi
 
-# ── Orders Service → RDS PostgreSQL ──────────────────────────────────────────
+# ── Orders Service -> RDS PostgreSQL ──────────────────────────────────────────
 orders:
   replicaCount: 1
-
-  # Disable in-cluster PostgreSQL sidecar
   postgresql:
-    enabled: false
-
-  # Reference Kubernetes Secret created by deploy-app.sh
-  # Secret: retail-store-orders-db (namespace: retail-app)
-  db:
-    name: orders
+    create: false # disable the in-cluster PostgreSQL StatefulSet
+    database: orders
     endpoint:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: host
-    user:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: username
-    password:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: password
-
+      host: "bedrock-orders-postgres.c0z6wuei25lr.us-east-1.rds.amazonaws.com"
+      port: "5432"
+    secret:
+      create: false
+      name: retail-store-orders-db # matches the Secret your deploy workflow creates
+      username: orders_admin
+  rabbitmq:
+    create: true # stays in-cluster - allowed per project brief
   resources:
     requests:
       cpu: 128m
@@ -85,15 +60,16 @@ orders:
       cpu: 512m
       memory: 512Mi
 
-# ── Carts Service → DynamoDB ──────────────────────────────────────────────────
+# ── Carts Service -> DynamoDB ──────────────────────────────────────────────────
 carts:
   replicaCount: 1
-
-  dynamoDb:
-    enabled:     true
-    tableName:   project-bedrock-carts
-    createTable: false    
-
+  persistence: dynamodb
+  dynamodb:
+    create: false # disable the in-cluster DynamoDB-local emulator
+    tableName: bedrock-carts # your ACTUAL table name (not project-bedrock-carts)
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::232428703462:role/bedrock-carts-dynamodb-role"
   resources:
     requests:
       cpu: 128m
@@ -105,7 +81,8 @@ carts:
 # ── Checkout ──────────────────────────────────────────────────────────────────
 checkout:
   replicaCount: 1
-
+  redis:
+    create: true # stays in-cluster - lightweight cache, allowed per project brief
   resources:
     requests:
       cpu: 128m
@@ -113,10 +90,6 @@ checkout:
     limits:
       cpu: 512m
       memory: 512Mi
-
-# ── RabbitMQ — stays in-cluster (acceptable per assessment) ──────────────────
-rabbitmq:
-  enabled: true
 
 # ── Assets (static files) ─────────────────────────────────────────────────────
 assets:
