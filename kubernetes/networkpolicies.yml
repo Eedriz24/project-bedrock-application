@@ -1,14 +1,18 @@
-# NetworkPolicy — retail-app namespace
+# NetworkPolicy - retail-app namespace
 # Default deny-all then selectively allow per service needs.
+# Selectors verified against live pod labels (kubectl get pods --show-labels)
+# rather than assumed - rabbitmq/redis use app.kubernetes.io/component,
+# not app.kubernetes.io/name, since those are subchart-nested dependencies.
 #
 # Traffic matrix:
-#   ui       → catalog, carts, orders, checkout     ✅
-#   checkout → orders, carts, rabbitmq              ✅
-#   orders   → postgresql (RDS), rabbitmq           ✅
-#   catalog  → mysql (RDS)                          ✅
-#   carts    → dynamodb (port 443)                  ✅
-#   catalog  → orders                               blocked
-#   orders   → catalog                              blocked
+#   ui       -> catalog, carts, orders, checkout, assets   allowed
+#   checkout -> orders, carts, rabbitmq (via orders), redis allowed
+#   orders   -> postgresql (RDS), rabbitmq                 allowed
+#   catalog  -> mysql (RDS)                                allowed
+#   carts    -> dynamodb (port 443)                        allowed
+#   catalog  -> orders                                     blocked
+#   orders   -> catalog                                    blocked
+
 # Default: deny all ingress and egress within namespace
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -99,10 +103,10 @@ spec:
               app.kubernetes.io/name: ui
   egress:
     - ports:
-        - port: 3306    # RDS MySQL
+        - port: 3306 # RDS MySQL
 
 ---
-# Orders: ingress from ui and checkout, egress to RDS PostgreSQL
+# Orders: ingress from ui and checkout, egress to RDS PostgreSQL + in-cluster RabbitMQ
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -126,11 +130,11 @@ spec:
               app.kubernetes.io/name: checkout
   egress:
     - ports:
-        - port: 5432    # RDS PostgreSQL
+        - port: 5432 # RDS PostgreSQL
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: rabbitmq
+              app.kubernetes.io/component: rabbitmq # real label - not "name: rabbitmq"
 
 ---
 # Carts: ingress from ui and checkout, egress to DynamoDB via HTTPS
@@ -157,10 +161,10 @@ spec:
               app.kubernetes.io/name: checkout
   egress:
     - ports:
-        - port: 443     # DynamoDB API via HTTPS
+        - port: 443 # DynamoDB API via HTTPS
 
 ---
-# Checkout: ingress from ui, egress to orders, carts, rabbitmq
+# Checkout: ingress from ui, egress to orders, carts, and its own redis
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -190,4 +194,4 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: rabbitmq
+              app.kubernetes.io/component: redis # real label - not "name: checkout-redis"
