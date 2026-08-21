@@ -1,10 +1,12 @@
-# ── UI ────────────────────────────────────────────────────────────────────────
+# values.yaml for oci://public.ecr.aws/aws-containers/retail-store-sample-chart:0.8.5
+# Schema verified directly against each subchart's values.yaml + deployment
+# templates. Do not rename these keys - unknown keys are silently ignored
+# by Helm, which is what broke every earlier version of this file.
+
 ui:
   replicaCount: 2
-
   service:
-    type: ClusterIP    # ALB Ingress handles external exposure
-
+    type: ClusterIP
   resources:
     requests:
       cpu: 128m
@@ -12,35 +14,23 @@ ui:
     limits:
       cpu: 512m
       memory: 512Mi
+  endpoints:
+    catalog: http://retail-store-catalog:80
+    carts: http://retail-store-carts:80
+    checkout: http://retail-store-checkout:80
+    orders: http://retail-store-orders:80
+    assets: http://retail-store-assets:80
 
-# ── Catalog Service → RDS MySQL ───────────────────────────────────────────────
 catalog:
   replicaCount: 1
-
-  # Disable in-cluster MySQL sidecar
   mysql:
-    enabled: false
-
-  # Reference Kubernetes Secret created by deploy-app.sh
-  # Secret: retail-store-catalog-db (namespace: retail-app)
-  db:
-    name: catalog
-    endpoint:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: host
-    user:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: username
-    password:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-catalog-db
-          key: password
-
+    create: false
+    endpoint: "bedrock-catalog-mysql.c0z6wuei25lr.us-east-1.rds.amazonaws.com"
+    database: catalog
+    secret:
+      create: false
+      name: retail-store-catalog-db
+      username: catalog_admin
   resources:
     requests:
       cpu: 128m
@@ -49,34 +39,20 @@ catalog:
       cpu: 512m
       memory: 512Mi
 
-# ── Orders Service → RDS PostgreSQL ──────────────────────────────────────────
 orders:
   replicaCount: 1
-
-  # Disable in-cluster PostgreSQL sidecar
   postgresql:
-    enabled: false
-
-  # Reference Kubernetes Secret created by deploy-app.sh
-  # Secret: retail-store-orders-db (namespace: retail-app)
-  db:
-    name: orders
+    create: false
+    database: orders
     endpoint:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: host
-    user:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: username
-    password:
-      valueFrom:
-        secretKeyRef:
-          name: retail-store-orders-db
-          key: password
-
+      host: "bedrock-orders-postgres.c0z6wuei25lr.us-east-1.rds.amazonaws.com"
+      port: "5432"
+    secret:
+      create: false
+      name: retail-store-orders-db
+      username: orders_admin
+  rabbitmq:
+    create: true
   resources:
     requests:
       cpu: 128m
@@ -85,15 +61,15 @@ orders:
       cpu: 512m
       memory: 512Mi
 
-# ── Carts Service → DynamoDB ──────────────────────────────────────────────────
 carts:
   replicaCount: 1
-
-  dynamoDb:
-    enabled:     true
-    tableName:   project-bedrock-carts
-    createTable: false    
-
+  persistence: dynamodb
+  dynamodb:
+    create: false
+    tableName: bedrock-carts
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::232428703462:role/bedrock-carts-dynamodb-role"
   resources:
     requests:
       cpu: 128m
@@ -102,10 +78,10 @@ carts:
       cpu: 512m
       memory: 512Mi
 
-# ── Checkout ──────────────────────────────────────────────────────────────────
 checkout:
   replicaCount: 1
-
+  redis:
+    create: true
   resources:
     requests:
       cpu: 128m
@@ -114,10 +90,5 @@ checkout:
       cpu: 512m
       memory: 512Mi
 
-# ── RabbitMQ — stays in-cluster (acceptable per assessment) ──────────────────
-rabbitmq:
-  enabled: true
-
-# ── Assets (static files) ─────────────────────────────────────────────────────
 assets:
   replicaCount: 1
