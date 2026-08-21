@@ -175,6 +175,9 @@ jobs:
             --output text)
           echo "table=$TABLE" >> "$GITHUB_OUTPUT"
 
+
+          
+
       - name: Deploy retail-store-sample-app
         run: |
           helm upgrade --install retail-store \
@@ -184,9 +187,19 @@ jobs:
             --values helm/values.yaml \
             --set carts.env.CARTS_DYNAMODB_TABLE_NAME=${{ steps.dynamo.outputs.table }} \
             --wait \
-            --timeout 10m
+            --timeout 15m
 
           echo "retail-store-sample-app deployed"
+
+      - name: Check pods status if deployment fails
+        if: failure()
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo "=== Pod Events ==="
+          kubectl describe pods -n ${{ env.NAMESPACE }}
+          echo "=== Recent Logs ==="
+          kubectl logs -n ${{ env.NAMESPACE }} --all-containers=true --tail=50 -l app.kubernetes.io/part-of=retail-store || true
 
       - name: Apply Ingress and NetworkPolicies
         run: |
